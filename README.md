@@ -297,6 +297,3 @@ The thermal and fan profiles will be saved and loaded on each reboot, ensuring t
 ## License
 GNU General Public License v3
 
-### 💖 Donations
-Donations are completely optional but show your love for open-source development and motivate me to add more features to this project!
-USDT (BEP20 - BNB Smart Chain): 0xDA7aa42B9Fc3041F20f4Ec828A70E9bDD54A6822
