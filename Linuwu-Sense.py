@@ -86,6 +86,53 @@ class LinuwuSenseController:
         except (FileNotFoundError, PermissionError, OSError):
             return False
     
+    def get_temperatures(self) -> Dict[str, Any]:
+        """Read CPU, acpitz (system), and GPU temperatures."""
+        temps = {}
+        
+        # Search all hwmon devices by name instead of hardcoding a fixed
+        # hwmon number, since hwmon numbering can shift across reboots/kernel updates.
+        hwmon_base = Path('/sys/class/hwmon')
+        if hwmon_base.exists():
+            for hwmon_dir in hwmon_base.iterdir():
+                name_file = hwmon_dir / 'name'
+                if not name_file.exists():
+                    continue
+                try:
+                    sensor_name = name_file.read_text().strip()
+                except (OSError, PermissionError):
+                    continue
+                
+                temp_file = hwmon_dir / 'temp1_input'
+                if not temp_file.exists():
+                    continue
+                
+                try:
+                    raw_value = int(temp_file.read_text().strip())
+                except (OSError, PermissionError, ValueError):
+                    continue
+                
+                celsius = round(raw_value / 1000, 1)
+                
+                if sensor_name == 'coretemp':
+                    temps['cpu_temp'] = celsius
+                elif sensor_name == 'acpitz':
+                    temps['acpitz_temp'] = celsius
+        
+        # GPU temp via nvidia-smi (NVIDIA GPUs aren't exposed through hwmon)
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=temperature.gpu', '--format=csv,noheader'],
+                capture_output=True, text=True, timeout=3
+            )
+            if result.returncode == 0:
+                temps['gpu_temp'] = int(result.stdout.strip())
+        except Exception:
+            pass
+        
+        return temps
+    
     def get_status(self) -> Dict[str, Any]:
         """Get current status of all available controls."""
         status = {}
@@ -98,6 +145,9 @@ class LinuwuSenseController:
         fan_speed = self._read_sysfs('fan_speed')
         if fan_speed:
             status['fan_speed'] = fan_speed
+        
+        # Hardware temperature readings
+        status.update(self.get_temperatures())
         
         # Battery controls
         battery_limiter = self._read_sysfs('battery_limiter')
@@ -432,6 +482,15 @@ Examples:
         
         if 'fan_speed' in status:
             print(f"Fan Speed: {status['fan_speed']}")
+        
+        if 'cpu_temp' in status:
+            print(f"CPU Temp: {status['cpu_temp']}°C")
+        
+        if 'acpitz_temp' in status:
+            print(f"System Temp: {status['acpitz_temp']}°C")
+        
+        if 'gpu_temp' in status:
+            print(f"GPU Temp: {status['gpu_temp']}°C")
         
         if 'battery_limiter' in status:
             print(f"Battery Limiter: {'Enabled' if status['battery_limiter'] == '1' else 'Disabled'}")
