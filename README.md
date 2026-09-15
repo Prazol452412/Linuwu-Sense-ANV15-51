@@ -117,8 +117,6 @@ about the kernel 7.2 compile fix and my own CLI convenience additions,
 not a general-purpose replacement.
 
 ## License
-GNU General Public License v3
 
-### 💖 Donations
-Donations are completely optional but show your love for open-source development and motivate me to add more features to this project!
-USDT (BEP20 - BNB Smart Chain): 0xDA7aa42B9Fc3041F20f4Ec828A70E9bDD54A6822
+This project is licensed under the GNU General Public License v3.0, same
+as upstream. See `LICENSE` for the full text.
