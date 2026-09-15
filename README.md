@@ -1,299 +1,124 @@
-# Unofficial Linux Kernel Module for Acer Gaming RGB Keyboard Backlight and Turbo Mode (Acer Predator , Nitro)
-The code base is still in its early stages, as I’ve just started working on developing this kernel module. It's a bit messy at the moment, but I’m hopeful that, with your help, we can collaborate to improve its structure and make it more organized over time.
+# Linuwu-Sense (personal fork)
 
-Inspired by [acer-predator-turbo](https://github.com/JafarAkhondali/acer-predator-turbo-and-rgb-keyboard-linux-module), which has a similar goal, this project was born out of my own challenges. I faced issues detecting the Turbo key and ended up using [acer_wmi](https://github.com/torvalds/linux/blob/master/drivers/platform/x86/acer-wmi.c), but it lacked key features like RGB , custom fan support, battery limiter, and more. As a result, I decided to implement these missing features in my own project.
+This is my personal fork of [Linuwu-Sense](https://github.com/0x7375646F/Linuwu-Sense),
+a community-maintained, reverse-engineered Linux kernel driver for Acer
+Predator/Nitro laptop features (fan control, battery limiter, RGB keyboard,
+thermal profiles, etc.) that Acer doesn't officially support on Linux.
 
-## 🚀 Installation
-To begin, identify your current kernel version:
+All credit for the actual hardware reverse-engineering and the original
+driver goes to the upstream project and its contributors. I'm not a kernel
+developer by trade. I ran into a build failure, dug in far enough to
+understand why it was failing, and fixed it. This fork exists mainly so
+I don't lose that fix, and in case it's useful to anyone else hitting the
+same issue before it's patched upstream.
+
+## Why this fork exists
+
+I hit a build failure on Linux kernel 7.2+ while trying to install this
+driver through [DAMX](https://github.com/PXDiv/Div-Acer-Manager-Max) (a
+suite that bundles this driver with a daemon and GUI). The short version:
+
+**Kernel 7.2 removed `strncpy()` from the kernel entirely.** It had been
+deprecated for years as part of a long-running cleanup effort. The
+original driver's source still called `strncpy()` in three places, so on
+kernel 7.2+ it simply fails to compile with an "implicit declaration of
+function 'strncpy'" error.
+
+The fix is straightforward once you know it: swap `strncpy()` for its
+modern replacement, `strscpy()`. But the two functions expect their length
+argument slightly differently. `strncpy(dest, src, len)` wants the number
+of bytes to copy, while `strscpy(dest, src, size)` wants the total
+destination buffer size (it always reserves the last byte for the null
+terminator). Doing a naive find-and-replace without adjusting for that
+difference introduces a quiet off-by-one bug: every value written through
+these functions gets truncated by exactly one character.
+
+I found this the hard way. After patching `strncpy` to `strscpy`, setting
+fan speed to `30,30` was silently being stored as `30,3` internally. This
+is what actually caused a "GPU fan doesn't work" symptom I was chasing
+for a while. It wasn't a hardware/driver support issue at all, just a
+string getting cut short by one character on the way in.
+
+## What's actually changed from upstream
+
+### `src/linuwu_sense.c`
+- Replaced 3 calls to `strncpy()` with `strscpy()`, required for the
+  driver to compile at all on kernel 7.2+.
+- Adjusted the length argument passed to `strscpy()` (`len + 1` instead
+  of `len`) to account for the different size semantics described above,
+  fixing the truncation bug.
+
+### `Linuwu-Sense.py` (the CLI control script)
+- Added CPU, GPU, and system (ACPI thermal zone) temperature reporting to
+  `--status`, read via `/sys/class/hwmon` (looked up by sensor name, not
+  a hardcoded hwmon index, since hwmon numbering isn't stable across
+  reboots or kernel updates) and `nvidia-smi` for GPU temp on NVIDIA
+  systems. This is pure user-space Python and has no relationship to the
+  kernel module. It's just convenient to have temps next to fan speed in
+  one command.
+- Added extra inline comments aimed at future-me (and anyone else)
+  debugging this later, mostly around where failures can be silent:
+  permission errors, or a write that "succeeds" but gets mangled by the
+  kernel side.
+
+### `dkms.conf`
+- Added so the module rebuilds automatically via
+  [DKMS](https://github.com/dell/dkms) whenever the system installs a new
+  kernel, instead of needing a manual `make clean && make && make install`
+  after every kernel update. If you're on a rolling-release distro
+  (Arch, Omarchy, etc.), you'll want this, since kernel updates land
+  often enough that manually rebuilding gets old fast.
+
+I have not touched anything related to RGB keyboard modes, battery
+calibration, or any of the WMI-call logic itself. Only the string-copy
+mechanics and the CLI's status output.
+
+## Installation
+
 ```bash
-uname -r
+git clone https://github.com/Prazol452412/Linuwu-Sense-ANV15-51.git
+cd Linuwu-Sense-ANV15-51
 ```
 
-Install the appropriate Linux headers based on your kernel version. This module has been tested with kernel version (6.12,6.13 ([previous code base](https://github.com/0x7375646F/Linuwu-Sense/tree/v6.13)),6.14) zen. 
-For Arch Linux:
+### Option A: manual build (rebuild required after every kernel update)
 ```bash
-sudo pacman -S linux-headers
+make clean
+make
+sudo make install
 ```
-Next, clone the repository and build the module:
+
+### Option B: DKMS (recommended, auto-rebuilds on kernel updates)
 ```bash
-git clone https://github.com/0x7375646F/Linuwu-Sense.git
-cd Linuwu-Sense
-make install
+sudo pacman -S dkms   # or your distro's equivalent
+sudo mkdir -p /usr/src/linuwu-sense-1.0
+sudo cp -r src dkms.conf Makefile /usr/src/linuwu-sense-1.0/
+sudo dkms add -m linuwu-sense -v 1.0
+sudo dkms build -m linuwu-sense -v 1.0
+sudo dkms install -m linuwu-sense -v 1.0
+sudo modprobe linuwu_sense
 ```
-The make command will remove the current acer_wmi module and load the patched version.
 
-To Uninstall:
+Check it loaded:
 ```bash
-make uninstall
-```
-> **⚠️ Warning!**
-> ## Use at your own risk! This driver is independently developed through reverse engineering the official PredatorSense app, without any involvement from Acer. It interacts with low-level WMI methods, which may not be tested across all models.
-
-## 🛠️ Usage
-# Python Control Script
-For easy control of all Linuwu-Sense features, use the included Python script [**`Linuwu-Sense.py`**](Linuwu-Sense.py). This script provides a user-friendly interface to control all module features without manually writing to sysfs files.
-
-**Usage Examples:**
-
-```bash
-# Show current status of all controls
+lsmod | grep linuwu_sense
 linuwu-sense --status
-
-# Set fan speeds (CPU=50%, GPU=70%)
-linuwu-sense --fan-speed 50 70
-
-# Enable battery limiter (80% charging limit)
-linuwu-sense --battery-limiter
-
-# Set four-zone RGB to breathing mode (purple, speed=4, brightness=100)
-# Note: Direction parameter (4th value) can be 0 (ignored), 1 (right to left), or 2 (left to right)
-linuwu-sense --four-zone-mode 1 4 100 1 255 0 255
-
-# Set per-zone colors (all zones blue, brightness=100)
-linuwu-sense --per-zone-mode 4287f5 4287f5 4287f5 4287f5 100
-
-# Save current settings as a profile
-linuwu-sense --save-profile gaming
-
-# Load a saved profile
-linuwu-sense --load-profile gaming
-
-# List all saved profiles
-linuwu-sense --list-profiles
-
 ```
 
-# Example Usage and Configuration
-
-Thermal profiles can be easily switched with a single click! 😎 For battery mode, you can choose between Eco and Balanced, while when plugged into AC, you have the options for Quiet, Balanced, Performance, and Turbo. ⚡💻 Each profile will be different for battery and AC, and the thermal and fan settings will automatically adjust based on your current power source. Customize it to fit your preferences! 🌟
-
----
-
-For **Predator** laptops, the following path is used: `/sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense`
-
-For **Nitro** laptops, the following path is used: `/sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/nitro_sense`
-
-predator_sense – This directory includes all the features, excluding the custom boot logo functionality.
-four_zoned_kb – If your keyboard is four-zoned, this directory provides support for it. Unfortunately, there is no support for per-key RGB keyboards.
-Here is how to interact with the Virtual Filesystems (VFS) mounted in this path:
-
-### **0. Thermal Profiles (Nitro users especially who don't have switch key) 🚀**
-
-Some acer nitro laptops don't come up with the thermal profile switch button in this case we manually need to set it:
-
-To probe the current thermal profile:
-
-`cat /sys/firmware/acpi/platform_profile`
-
-To check the supported thermal profile:
-
-`cat /sys/firmware/acpi/platform_profile_choices`
-
-To switch the platform profile:
-
-`echo balanced | sudo tee /sys/firmware/acpi/platform_profile`
-
-Replace the balanced with the supported profile you have.
-
-#### **1. Backlight Timeout ⏰**
-
-This feature turns off the keyboard RGB after 30 seconds of idle mode.
-
-- **0** – Disabled
-- **1** – Enabled
-
-To check the current status, use:
-
-`cat /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/backlight_timeout`
-
-To change the state, use:
-
-`echo 1 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/backlight_timeout`
-
----
-
-#### **2. Battery Calibration 🔋**
-
-This function calibrates your battery to provide a more accurate percentage reading. It involves charging the battery to 100%, draining it to 0%, and recharging it back to 100%. **Do not unplug the laptop from AC power during calibration.**
-
-- **1** – Start calibration
-- **0** – Stop calibration
-
-To check the current status:
-
-`cat /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/battery_calibration`
-
-To change the state:
-
-`echo 1 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/battery_calibration`
-
----
-
-#### **3. Battery Limiter ⚡**
-
-Limits battery charging to 80%, preserving battery health for laptops primarily used while plugged into AC power.
-
-- **1** – Enabled
-- **0** – Disabled
-
-To check the current status:
-
-`cat /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/battery_limiter`
-
-To change the state:
-
-`echo 1 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/battery_limiter`
-
----
-
-#### **4. Boot Animation Sound 🎶**
-
-Enables or disables custom boot animation and sound.
-
-- **1** – Enabled
-- **0** – Disabled
-
-To check the current status:
-
-`cat /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/boot_animation_sound`
-
-To change the state:
-
-`echo 0 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/boot_animation_sound`
-
----
-
-#### **5. Fan Speed  🌬️**
-
-Controls the CPU and GPU fan speeds.
-
-- **0** – Auto
-- **1** – Minimum fan speed (not recommended)
-- **100** – Maximum fan speed
-- Other values like **50, 55, 70** can be set according to your preference.
-
-Example (set CPU to 50 and GPU to 70):
-
-`echo 50,70 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/fan_speed`
-
----
-
-#### **6. LCD Override 🖥️**
-
-Reduces LCD latency and minimizes ghosting.
-
-- **1** – Enabled
-- **0** – Disabled
-
-To check the current status:
-
-`cat /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/lcd_override`
-
-To change the state:
-
-`echo 1 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/lcd_override`
-
----
-
-#### **7. USB Charging ⚡**
-
-Allows the USB charging port to provide power even when the laptop is off.
-
-- **0** – Disabled
-- **10** – Provides power until battery reaches 10%
-- **20** – Provides power until battery reaches 20%
-- **30** – Provides power until battery reaches 30%
-
-To check the current status:
-
-`cat /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/usb_charging`
-
-To change the state:
-
-`echo 20 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/predator_sense/usb_charging`
-
----
-## 💻 Keyboard Configuration 
-### **Directory: `four_zoned_kb`**
-
-The `four_zoned_kb` directory contains two Virtual File Systems (VFS) that control the RGB backlight behavior of the four-zone keyboard:
-
-1. **`four_zone_mode`**
-2. **`per_zone_mode`**
-
-#### **1. Per-Zone Mode (`per_zone_mode`) 🎨**
-
-This mode allows you to set a specific RGB color for each of the four keyboard zones individually. Each zone is represented by an RGB value in hexadecimal format (e.g., `4287f5` where `42` is Red, `87` is Green, and `f5` is Blue).
-
-- **Parameters:**
-    
-    - The `per_zone_mode` file accepts four parameters, one for each zone, separated by commas.
-    - The `per_zone_mode` also accepts brightness value.
-    - Each parameter represents the RGB value for a specific zone in the format `RRGGBB`.
-- **Example:**
-
-To set all four zones to the same color (`4287f5`) and brightness to full:
-
-`echo 4287f5,4287f5,4287f5,4287f5,100 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/four_zoned_kb/per_zone_mode`
-
-To set each zone with unique colors:
-
-`echo 4287f5,ff5733,33ff57,ff33a6,100 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/four_zoned_kb/per_zone_mode`
-
-When reading (`cat`) the `per_zone_mode` file, the current color values for each zone are displayed in the format:
-
-`4287f5,4287f5,4287f5,4287f5,100`
-
-This indicates the current RGB color for each of the four zones.
-
-### **Four-Zone Mode (`four_zone_mode`) ✨**
-
-The `four_zone_mode` controls advanced RGB effects for your keyboard, requiring seven parameters:
-
-- **Parameters:**
-    
-    - **Mode (0-7):** Lighting effect type (e.g., static, breathing, wave).
-    - **Speed (0-9):** Speed of the effect (if applicable).
-    - **Brightness (0-100):** Intensity of the lighting effect.
-    - **Direction (1-2):** Direction of the effect (1 = right to left, 2 = left to right).
-    - **Red (0-255), Green (0-255), Blue (0-255):** RGB color values.
-- **Modes:**
-    
-    - **0:** Static Mode – Fixed color, no animation.
-    - **1:** Breathing Mode – Color fades in and out.
-    - **2:** Neon Mode – Neon glow effect, fixed color (black), direction ignored.
-    - **3:** Wave Mode – Wave-like effect, color transitions across the keyboard.
-    - **4:** Shifting Mode – Shifting light effect, full control over speed, direction, and color.
-    - **5:** Zoom Mode – Zoom effect, direction ignored.
-    - **6:** Meteor Mode – Meteor-like effect, direction ignored.
-    - **7:** Twinkling Mode – Twinkling light effect, direction ignored.
-- **Example Command:**
-    
-    Set to **Neon Mode** with speed 1, full brightness, and top-to-bottom direction:
-    
-    `echo 3,1,100,2,0,0,0 | sudo tee /sys/module/linuwu_sense/drivers/platform:acer-wmi/acer-wmi/four_zoned_kb/four_zone_mode`
-    
-    **Explanation:**
-    
-    - `3`: Neon Mode
-    - `1`: Speed (1)
-    - `100`: Full brightness
-    - `2`: Direction (top to bottom)
-    - `0`: Red (black for Neon)
-    - `0`: Green (black for Neon)
-    - `0`: Blue (black for Neon)
- 
-The thermal and fan profiles will be saved and loaded on each reboot, ensuring that the settings remain persistent across restarts.
-## GUI:
-- [Div Acer Manager Max By PXDiv](https://github.com/PXDiv/Div-Acer-Manager-Max)
-- [GUI LinuwuSense By KumarVivek](https://github.com/kumarvivek1752/Linuwu-Sense-GUI/tree/main)
-
-## 🚧 Roadmap:
-- [x] GUI for keyboard rgb controls to make it noob friendly.
-- [x] Module Persistence After Reboot.
-- [ ] Custom Boot Logo Feature Support.
-- [ ] More device support currently only ( PHN16-71 ) is fully supported.
+## A note on scope
+
+I made these fixes to solve a problem I was personally stuck on, on my
+own laptop, an Acer Nitro ANV15-51. I haven't tested this fork across the
+full range of Predator/Nitro models the original project supports, and
+I'm not in a position to promise ongoing maintenance beyond keeping my
+own machine working. If something's broken for your specific model, the
+[upstream repository](https://github.com/0x7375646F/Linuwu-Sense) and its
+issue tracker are the right place to look first. This fork is narrowly
+about the kernel 7.2 compile fix and my own CLI convenience additions,
+not a general-purpose replacement.
 
 ## License
 GNU General Public License v3
 
+### 💖 Donations
+Donations are completely optional but show your love for open-source development and motivate me to add more features to this project!
+USDT (BEP20 - BNB Smart Chain): 0xDA7aa42B9Fc3041F20f4Ec828A70E9bDD54A6822
